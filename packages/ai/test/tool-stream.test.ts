@@ -19,7 +19,8 @@ describe("ToolStream", () => {
       if (ToolStream.isError(first)) return yield* first
       const second = ToolStream.appendOrStart(ADAPTER, first.tools, 0, { text: ':"weather"}' }, "missing tool")
       if (ToolStream.isError(second)) return yield* second
-      const finished = yield* ToolStream.finish(ADAPTER, second.tools, 0)
+      const finished = ToolStream.finish(ADAPTER, second.tools, 0)
+      if (ToolStream.isError(finished)) return yield* finished
 
       expect(first.events).toEqual([
         { type: "tool-input-start", id: "call_1", name: "lookup" },
@@ -91,7 +92,8 @@ describe("ToolStream", () => {
         "missing tool",
       )
       if (ToolStream.isError(second)) return yield* second
-      const finished = yield* ToolStream.finish(ADAPTER, second.tools, 0)
+      const finished = ToolStream.finish(ADAPTER, second.tools, 0)
+      if (ToolStream.isError(finished)) return yield* finished
 
       expect(finished.events).toEqual([
         { type: "tool-input-end", id: "call_1", name: "lookup" },
@@ -114,7 +116,8 @@ describe("ToolStream", () => {
         name: "lookup",
         input: '{"query":"partial"}',
       })
-      const finished = yield* ToolStream.finishWithInput(ADAPTER, tools, "item_1", '{"query":"final"}')
+      const finished = ToolStream.finish(ADAPTER, tools, "item_1", '{"query":"final"}')
+      if (ToolStream.isError(finished)) return yield* finished
 
       expect(finished).toEqual({
         tools: {},
@@ -133,7 +136,8 @@ describe("ToolStream", () => {
         name: "lookup",
         input: '{"query":"partial',
       })
-      const finished = yield* ToolStream.finish(ADAPTER, tools, "item_1")
+      const finished = ToolStream.finish(ADAPTER, tools, "item_1")
+      if (ToolStream.isError(finished)) return yield* finished
 
       expect(finished).toEqual({
         tools: {},
@@ -152,7 +156,8 @@ describe("ToolStream", () => {
         name: "lookup",
         input: '{"path":"A\\H","text":"first\tsecond"}',
       })
-      const finished = yield* ToolStream.finish(ADAPTER, tools, "item_1")
+      const finished = ToolStream.finish(ADAPTER, tools, "item_1")
+      if (ToolStream.isError(finished)) return yield* finished
 
       expect(finished.events).toEqual([
         { type: "tool-input-end", id: "call_1", name: "lookup" },
@@ -168,7 +173,8 @@ describe("ToolStream", () => {
         name: "lookup",
         input: "invalid",
       })
-      const finished = yield* ToolStream.finish(ADAPTER, tools, "item_1")
+      const finished = ToolStream.finish(ADAPTER, tools, "item_1")
+      if (ToolStream.isError(finished)) return yield* finished
 
       expect(finished.events).toEqual([
         { type: "tool-input-end", id: "call_1", name: "lookup" },
@@ -189,7 +195,8 @@ describe("ToolStream", () => {
         name: "lookup",
         input: '{"query":"partial',
       })
-      const finished = yield* ToolStream.finishAll(ADAPTER, tools)
+      const finished = ToolStream.finishAll(ADAPTER, tools)
+      if (ToolStream.isError(finished)) return yield* finished
 
       expect(finished).toEqual({
         tools: {},
@@ -211,9 +218,9 @@ describe("ToolStream", () => {
         input: '{"query":"partial',
         providerExecuted: true,
       })
-      const result = yield* Effect.exit(ToolStream.finish(ADAPTER, tools, "item_1"))
+      const result = ToolStream.finish(ADAPTER, tools, "item_1")
 
-      expect(result._tag).toBe("Failure")
+      expect(result).toBeInstanceOf(AIError)
     }),
   )
 
@@ -230,7 +237,8 @@ describe("ToolStream", () => {
         input: '{"query":"docs"}',
         providerExecuted: true,
       })
-      const finished = yield* ToolStream.finishAll(ADAPTER, tools)
+      const finished = ToolStream.finishAll(ADAPTER, tools)
+      if (ToolStream.isError(finished)) return yield* finished
 
       expect(finished).toEqual({
         tools: {},

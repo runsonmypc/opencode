@@ -252,7 +252,7 @@ const mapUsage = (usage: typeof NativeUsage.Type) =>
   })
 
 // Lifecycle deltas open blocks on demand and ends are no-ops for closed blocks, so content-start needs no handling.
-const step = Effect.fn("CohereChat.step")(function* (state: State, event: Event) {
+const step = Effect.fnUntraced(function* (state: State, event: Event) {
   const events: LLMEvent[] = []
   switch (event.type) {
     case "message-start":
@@ -292,11 +292,13 @@ const step = Effect.fn("CohereChat.step")(function* (state: State, event: Event)
       return [{ ...state, tools: result.tools }, result.events] as const
     }
     case "tool-call-end": {
-      const result = yield* ToolStream.finish(ADAPTER, state.tools, event.index)
+      const result = ToolStream.finish(ADAPTER, state.tools, event.index)
+      if (ToolStream.isError(result)) return yield* result
       return [{ ...state, tools: result.tools }, result.events ?? []] as const
     }
     case "message-end": {
-      const pending = yield* ToolStream.finishAll(ADAPTER, state.tools)
+      const pending = ToolStream.finishAll(ADAPTER, state.tools)
+      if (ToolStream.isError(pending)) return yield* pending
       events.push(...pending.events)
       const lifecycle = Lifecycle.finish(state.lifecycle, events, {
         reason: finishReason(event.delta.finish_reason),

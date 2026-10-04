@@ -1,10 +1,11 @@
-import { Effect, Option } from "effect"
+import { Option, Result, Schema } from "effect"
 import { AIError, LLMEvent, type ProviderMetadata, type ToolCall } from "../../schema/index.js"
-import { eventError, parseToolInput, type ToolAccumulator } from "../shared.js"
+import { Json, eventError, type ToolAccumulator } from "../shared.js"
 import { parse } from "./partial-json.js"
 
 type StreamKey = string | number
 const parsePartialInput = Option.liftThrowable(parse)
+const decodeInput = Schema.decodeUnknownResult(Json)
 
 /**
  * One pending streamed tool call. Providers emit the tool identity and JSON
@@ -69,31 +70,26 @@ const inputDelta = (tool: PendingTool, text: string) =>
     input: Option.getOrElse(parsePartialInput(tool.input), () => ({})),
   })
 
-const toolCall = (route: string, tool: PendingTool, inputOverride?: string) => {
+const toolCall = (route: string, tool: PendingTool, inputOverride?: string): ToolCall | AIError => {
   const raw = inputOverride ?? tool.input
-  return parseToolInput(route, tool.name, raw).pipe(
-    Effect.catch((error) =>
-      tool.providerExecuted
-        ? Effect.fail(error)
-        : Effect.succeed(
-            Option.getOrElse(
-              Option.map(parsePartialInput(raw), (input) => input ?? {}),
-              () => ({}),
-            ),
-          ),
-    ),
-    Effect.map(
-      (input): ToolCall =>
-        LLMEvent.toolCall({
-          id: tool.id,
-          name: tool.name,
-          namespace: tool.namespace,
-          input,
-          providerExecuted: tool.providerExecuted ? true : undefined,
-          providerMetadata: tool.providerMetadata,
-        }),
-    ),
-  )
+  const body = raw || "{}"
+  const parsed = decodeInput(body)
+  if (Result.isFailure(parsed) && tool.providerExecuted)
+    return eventError(route, `Invalid JSON input for ${route} tool call ${tool.name}`, body, parsed.failure)
+  const input = Result.isSuccess(parsed)
+    ? parsed.success
+    : Option.getOrElse(
+        Option.map(parsePartialInput(raw), (value) => value ?? {}),
+        () => ({}),
+      )
+  return LLMEvent.toolCall({
+    id: tool.id,
+    name: tool.name,
+    namespace: tool.namespace,
+    input,
+    providerExecuted: tool.providerExecuted ? true : undefined,
+    providerMetadata: tool.providerMetadata,
+  })
 }
 
 const finishEvents = (tool: PendingTool, event: ToolCall): ReadonlyArray<LLMEvent> => [
@@ -123,8 +119,7 @@ const appendTool = <K extends StreamKey>(
   }
 }
 
-export const isError = <K extends StreamKey>(result: AppendOutcome<K> | AIError): result is AIError =>
-  result instanceof AIError
+export const isError = <T>(result: T | AIError): result is AIError => result instanceof AIError
 
 /**
  * Register a tool call whose start event arrived before any argument deltas.
@@ -198,52 +193,40 @@ export const appendExisting = <K extends StreamKey>(
 ): AppendOutcome<K> | AIError => append(tools, key, text) ?? eventError(route, missingToolMessage)
 
 /**
- * Finalize one pending tool call: parse the accumulated raw JSON, remove it
- * from state, and recover incomplete local arguments when needed.
+ * Finalize one pending tool call: parse the accumulated raw JSON (or an
+ * authoritative final `input` override from `response.output_item.done`),
+ * remove it from state, and recover incomplete local arguments when needed.
  * Missing keys are a no-op because some providers emit stop events for
  * non-tool content blocks.
  */
-export const finish = <K extends StreamKey>(route: string, tools: State<K>, key: K) =>
-  Effect.gen(function* () {
-    const tool = tools[key]
-    if (!tool) return { tools }
-    return {
-      tools: withoutTool(tools, key),
-      events: finishEvents(tool, yield* toolCall(route, tool)),
-    }
-  })
-
-/**
- * Finalize one pending tool call with an authoritative final input string.
- * OpenAI Responses can send accumulated deltas and then repeat the completed
- * arguments on `response.output_item.done`; the final value wins.
- */
-export const finishWithInput = <K extends StreamKey>(route: string, tools: State<K>, key: K, input: string) =>
-  Effect.gen(function* () {
-    const tool = tools[key]
-    if (!tool) return { tools }
-    return {
-      tools: withoutTool(tools, key),
-      events: finishEvents(tool, yield* toolCall(route, tool, input)),
-    }
-  })
+export const finish = <K extends StreamKey>(route: string, tools: State<K>, key: K, input?: string) => {
+  const tool = tools[key]
+  if (!tool) return { tools }
+  const event = toolCall(route, tool, input)
+  if (isError(event)) return event
+  return {
+    tools: withoutTool(tools, key),
+    events: finishEvents(tool, event),
+  }
+}
 
 /**
  * Finalize every pending tool call at once. OpenAI Chat has this shape: it does
  * not emit per-tool stop events, so all accumulated calls finish independently
  * when the choice receives a terminal `finish_reason`.
  */
-export const finishAll = <K extends StreamKey>(route: string, tools: State<K>) =>
-  Effect.gen(function* () {
-    const pending = Object.values<PendingTool | undefined>(tools).filter(
-      (tool): tool is PendingTool => tool !== undefined,
-    )
-    return {
-      tools: empty<K>(),
-      events: yield* Effect.forEach(pending, (tool) =>
-        toolCall(route, tool).pipe(Effect.map((event) => finishEvents(tool, event))),
-      ).pipe(Effect.map((events) => events.flat())),
-    }
-  })
+export const finishAll = <K extends StreamKey>(route: string, tools: State<K>) => {
+  const events: LLMEvent[] = []
+  for (const tool of Object.values<PendingTool | undefined>(tools)) {
+    if (!tool) continue
+    const event = toolCall(route, tool)
+    if (isError(event)) return event
+    events.push(...finishEvents(tool, event))
+  }
+  return {
+    tools: empty<K>(),
+    events,
+  }
+}
 
 export * as ToolStream from "./tool-stream.js"

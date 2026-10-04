@@ -722,7 +722,8 @@ const step = (state: ParserState, event: BedrockEvent) =>
 
     if (event.contentBlockStop) {
       const index = event.contentBlockStop.contentBlockIndex
-      const result = yield* ToolStream.finish(ADAPTER, state.tools, index)
+      const result = ToolStream.finish(ADAPTER, state.tools, index)
+      if (ToolStream.isError(result)) return yield* result
       const events: LLMEvent[] = []
       const resultEvents = result.events ?? []
       const lifecycle = (() => {

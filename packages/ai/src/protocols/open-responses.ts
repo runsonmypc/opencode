@@ -1143,23 +1143,16 @@ const onReasoningSummaryPartDone = (state: ParserState, event: Event): StepResul
   ]
 }
 
-const onFunctionCallArgumentsDelta = Effect.fn("OpenResponses.onFunctionCallArgumentsDelta")(function* (
-  state: ParserState,
-  event: Event,
-) {
-  if (event.item_id === undefined) return [state, NO_EVENTS] satisfies StepResult
+const onFunctionCallArgumentsDelta = (state: ParserState, event: Event): StepResult | AIError => {
+  if (event.item_id === undefined) return [state, NO_EVENTS]
   const tool = state.tools[event.item_id]
-  if (!tool) return [state, NO_EVENTS] satisfies StepResult
+  if (!tool) return [state, NO_EVENTS]
   const final = event.type === "response.function_call_arguments.done" ? event.arguments : undefined
-  if (event.type === "response.function_call_arguments.done" && final === undefined)
-    return [state, NO_EVENTS] satisfies StepResult
+  if (event.type === "response.function_call_arguments.done" && final === undefined) return [state, NO_EVENTS]
   if (final !== undefined && !final.startsWith(tool.input))
-    return [
-      { ...state, tools: ToolStream.start(state.tools, event.item_id, { ...tool, input: final }) },
-      NO_EVENTS,
-    ] satisfies StepResult
+    return [{ ...state, tools: ToolStream.start(state.tools, event.item_id, { ...tool, input: final }) }, NO_EVENTS]
   const delta = final === undefined ? event.delta : final.slice(tool.input.length)
-  if (!delta) return [state, NO_EVENTS] satisfies StepResult
+  if (!delta) return [state, NO_EVENTS]
   const result = ToolStream.appendExisting(
     state.id,
     state.tools,
@@ -1167,23 +1160,20 @@ const onFunctionCallArgumentsDelta = Effect.fn("OpenResponses.onFunctionCallArgu
     delta,
     `${state.name} tool argument delta is missing its tool call`,
   )
-  if (ToolStream.isError(result)) return yield* result
+  if (ToolStream.isError(result)) return result
   const events: LLMEvent[] = []
   const lifecycle = result.events.length ? Lifecycle.stepStart(state.lifecycle, events) : state.lifecycle
   events.push(...result.events)
-  return [{ ...state, lifecycle, tools: result.tools }, events] satisfies StepResult
-})
+  return [{ ...state, lifecycle, tools: result.tools }, events]
+}
 
-const onOutputItemDone = Effect.fn("OpenResponses.onOutputItemDone")(function* (
-  state: ParserState,
-  item: NormalizedEvent["item"],
-) {
-  if (!item) return [state, NO_EVENTS] satisfies StepResult
+const onOutputItemDone = (state: ParserState, item: NormalizedEvent["item"]): StepResult | AIError => {
+  if (!item) return [state, NO_EVENTS]
 
   if (item.type === "compaction") {
     if (typeof item.encrypted_content !== "string")
-      return yield* ProviderShared.eventError(state.id, "Compaction output is missing its encrypted content")
-    if (state.completedCompactions.has(item.id)) return [state, NO_EVENTS] satisfies StepResult
+      return ProviderShared.eventError(state.id, "Compaction output is missing its encrypted content")
+    if (state.completedCompactions.has(item.id)) return [state, NO_EVENTS]
     const events: LLMEvent[] = []
     const lifecycle = Lifecycle.stepStart(state.lifecycle, events)
     events.push(
@@ -1193,10 +1183,7 @@ const onOutputItemDone = Effect.fn("OpenResponses.onOutputItemDone")(function* (
         encrypted: item.encrypted_content,
       }),
     )
-    return [
-      { ...state, lifecycle, completedCompactions: new Set([...state.completedCompactions, item.id]) },
-      events,
-    ] satisfies StepResult
+    return [{ ...state, lifecycle, completedCompactions: new Set([...state.completedCompactions, item.id]) }, events]
   }
 
   if (item.type === "message") {
@@ -1221,11 +1208,11 @@ const onOutputItemDone = Effect.fn("OpenResponses.onOutputItemDone")(function* (
         message: active ? undefined : state.message,
       },
       events,
-    ] satisfies StepResult
+    ]
   }
 
   if (item.type === "function_call") {
-    if (!item.call_id || !item.name) return [state, NO_EVENTS] satisfies StepResult
+    if (!item.call_id || !item.name) return [state, NO_EVENTS]
     const metadata = providerMetadata(state, { itemId: item.id })
     const registered = state.tools[item.id] !== undefined
     const tools = registered
@@ -1236,10 +1223,8 @@ const onOutputItemDone = Effect.fn("OpenResponses.onOutputItemDone")(function* (
           namespace: item.namespace,
           providerMetadata: metadata,
         })
-    const result =
-      item.arguments === undefined
-        ? yield* ToolStream.finish(state.id, tools, item.id)
-        : yield* ToolStream.finishWithInput(state.id, tools, item.id, item.arguments)
+    const result = ToolStream.finish(state.id, tools, item.id, item.arguments)
+    if (ToolStream.isError(result)) return result
     const events: LLMEvent[] = []
     const finished = result.events ?? []
     // A done-only call never streamed a start event, so open its lifecycle here.
@@ -1267,7 +1252,7 @@ const onOutputItemDone = Effect.fn("OpenResponses.onOutputItemDone")(function* (
         tools: result.tools,
       },
       events,
-    ] satisfies StepResult
+    ]
   }
 
   if (item.type === "reasoning") {
@@ -1299,18 +1284,18 @@ const onOutputItemDone = Effect.fn("OpenResponses.onOutputItemDone")(function* (
       }
       const reasoningItems = { ...state.reasoningItems }
       delete reasoningItems[item.id]
-      return [{ ...state, lifecycle, reasoningItems }, events] satisfies StepResult
+      return [{ ...state, lifecycle, reasoningItems }, events]
     }
     const lifecycle = Lifecycle.stepStart(state.lifecycle, events)
     events.push(LLMEvent.reasoningStart({ id: item.id, providerMetadata: metadata }))
     events.push(LLMEvent.reasoningEnd({ id: item.id, providerMetadata: metadata, text: itemText }))
-    return [{ ...state, lifecycle }, events] satisfies StepResult
+    return [{ ...state, lifecycle }, events]
   }
 
-  return [state, NO_EVENTS] satisfies StepResult
-})
+  return [state, NO_EVENTS]
+}
 
-const onResponseFinish = Effect.fn("OpenResponses.onResponseFinish")(function* (state: ParserState, event: Event) {
+const onResponseFinish = (state: ParserState, event: Event): StepResult | AIError => {
   let current = state
   const events: LLMEvent[] = []
   if (event.type === "response.completed") {
@@ -1318,19 +1303,21 @@ const onResponseFinish = Effect.fn("OpenResponses.onResponseFinish")(function* (
     for (const item of (event.response?.output ?? []).map((item, index) => resolveItem(state, item, index))) {
       // Terminal recovery cannot insert a checkpoint before already-emitted content.
       if (item.type === "compaction" && state.lifecycle.stepStarted && !state.completedCompactions.has(item.id))
-        return yield* ProviderShared.eventError(
+        return ProviderShared.eventError(
           state.id,
           "Cannot recover a compaction checkpoint after output has been emitted",
         )
       const recoverable =
         item.type === "compaction" || (item.type === "function_call" && current.tools[item.id] !== undefined)
       if (!recoverable) continue
-      const [next, emitted] = yield* onOutputItemDone(current, item)
-      current = next
-      events.push(...emitted)
+      const done = onOutputItemDone(current, item)
+      if (done instanceof AIError) return done
+      current = done[0]
+      events.push(...done[1])
     }
     // Some compatible providers omit output_item.done even after completing the response.
-    const pending = yield* ToolStream.finishAll(current.id, current.tools)
+    const pending = ToolStream.finishAll(current.id, current.tools)
+    if (ToolStream.isError(pending)) return pending
     current = {
       ...current,
       tools: pending.tools,
@@ -1354,8 +1341,8 @@ const onResponseFinish = Effect.fn("OpenResponses.onResponseFinish")(function* (
           })
         : undefined,
   })
-  return [{ ...current, lifecycle }, events] satisfies StepResult
-})
+  return [{ ...current, lifecycle }, events]
+}
 
 /** Error code and message from wherever the frame put them; top-level fields win over nested ones. */
 export const errorDetail = (event: Event) => {
@@ -1389,6 +1376,9 @@ export const providerFailure = (event: Event, fallback: string, body = ProviderS
       : classifyProviderFailure({ message, status, rawBody: body })
   return new AIError({ reason })
 }
+
+const stepOutcome = (result: StepResult | AIError) =>
+  result instanceof AIError ? Effect.fail(result) : Effect.succeed(result)
 
 // Callers must pass events through `normalize` first. The OpenAPI requires
 // string IDs but imposes no minLength; empty is not missing.
@@ -1449,10 +1439,11 @@ export const step = (state: ParserState, event: NormalizedEvent) => {
   }
   if (event.type === "response.function_call_arguments.delta" || event.type === "response.function_call_arguments.done")
     return event.item_id !== undefined
-      ? onFunctionCallArgumentsDelta(state, event)
+      ? stepOutcome(onFunctionCallArgumentsDelta(state, event))
       : ProviderShared.eventError(state.id, `${event.type} is missing item_id`)
-  if (event.type === "response.output_item.done") return onOutputItemDone(state, event.item)
-  if (event.type === "response.completed" || event.type === "response.incomplete") return onResponseFinish(state, event)
+  if (event.type === "response.output_item.done") return stepOutcome(onOutputItemDone(state, event.item))
+  if (event.type === "response.completed" || event.type === "response.incomplete")
+    return stepOutcome(onResponseFinish(state, event))
   if (event.type === "response.failed") return providerFailure(event, `${state.name} response failed`)
   if (event.type === "error") return providerFailure(event, `${state.name} stream error`)
   return Effect.succeed<StepResult>([state, NO_EVENTS])
